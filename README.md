@@ -1,6 +1,9 @@
-# CRANE
+<p align="center">
+  <img src="assets/logo.svg" width="200" alt="CRANE logo"/>
+</p>
 
-**Compiled Runtime for Apple Neural Engine**
+<h1 align="center">CRANE</h1>
+<p align="center"><b>Compiled Runtime for Apple Neural Engine</b></p>
 
 Direct Python control of Apple Neural Engine (ANE) via reverse-engineered private APIs. Compile MIL programs with baked weights, execute fused transformer blocks on ANE hardware, and cache kernels for repeated inference — no Core ML required.
 
