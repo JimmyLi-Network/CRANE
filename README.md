@@ -1,6 +1,6 @@
-# ARC-ANE
+# CRANE
 
-**A Runtime for Compiled ANE Neural Execution**
+**Compiled Runtime for Apple Neural Engine**
 
 Direct Python control of Apple Neural Engine (ANE) via reverse-engineered private APIs. Compile MIL programs with baked weights, execute fused transformer blocks on ANE hardware, and cache kernels for repeated inference — no Core ML required.
 
@@ -78,7 +78,7 @@ A fused VisionBlock kernel contains ~94 MIL operations:
 Requires macOS 15+ on Apple Silicon (M1/M2/M3/M4).
 
 ```bash
-cd arc-ane
+cd crane
 make
 ```
 
@@ -90,8 +90,8 @@ This compiles `libane_bridge.dylib` from `src/ane_bridge.m`. No external depende
 
 ```python
 import numpy as np
-from arc_ane import ANEBridgeLibrary
-from arc_ane.bridge import run_dyn_matmul
+from crane import ANEBridgeLibrary
+from crane.bridge import run_dyn_matmul
 
 x = np.random.randn(64, 128).astype(np.float32)
 w = np.random.randn(128, 256).astype(np.float32)
@@ -101,8 +101,8 @@ out = run_dyn_matmul(x, w)  # (64, 256), runs on ANE
 ### Baked-Weight Linear
 
 ```python
-from arc_ane import compile_baked_linear_kernel
-from arc_ane.runtime import run_baked_linear_kernel
+from crane import compile_baked_linear_kernel
+from crane.runtime import run_baked_linear_kernel
 
 kernel = compile_baked_linear_kernel(
     ic=128, oc=256, seq=64,
@@ -115,7 +115,7 @@ out = run_baked_linear_kernel(kernel, x)  # only activation transferred per call
 ### Fused Transformer Block
 
 ```python
-from arc_ane import (
+from crane import (
     compile_fused_vision_block,
     run_fused_vision_block,
     build_windowed_attention_mask,
@@ -143,17 +143,17 @@ make test
 Or manually:
 
 ```bash
-ARC_ANE_BRIDGE_PATH=src/libane_bridge.dylib python -m pytest tests/ -v
+CRANE_BRIDGE_PATH=src/libane_bridge.dylib python -m pytest tests/ -v
 ```
 
 ## File Structure
 
 ```
-arc-ane/
+crane/
   src/
     ane_bridge.h          # C API header
     ane_bridge.m          # Objective-C bridge implementation
-    arc_ane/
+    crane/
       __init__.py         # Public API
       bridge.py           # Python ctypes bindings + MIL generators
       runtime.py          # ANEKernel compile/run/cache management

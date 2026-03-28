@@ -4,7 +4,7 @@ from typing import Sequence
 
 import numpy as np
 
-from arc_ane.bridge import (
+from crane.bridge import (
     ANEBridgeError,
     ANEBridgeLibrary,
     DEFAULT_ANE_BRIDGE_PATH,

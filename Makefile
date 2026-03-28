@@ -13,6 +13,6 @@ clean:
 	rm -f $(TARGET)
 
 test: $(TARGET)
-	ARC_ANE_BRIDGE_PATH=$(TARGET) python -m pytest tests/ -q
+	CRANE_BRIDGE_PATH=$(TARGET) python -m pytest tests/ -q
 
 .PHONY: all clean test

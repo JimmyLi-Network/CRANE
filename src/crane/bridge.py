@@ -6,7 +6,7 @@ import numpy as np
 
 
 DEFAULT_ANE_BRIDGE_PATH = os.environ.get(
-    "ARC_ANE_BRIDGE_PATH",
+    "CRANE_BRIDGE_PATH",
     "/Users/jimmy/Projects/ANE/bridge/libane_bridge.dylib",
 )
 _LIBC = ctypes.CDLL(None)

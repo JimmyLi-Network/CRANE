@@ -23,8 +23,8 @@ from pathlib import Path
 
 import numpy as np
 
-from arc_ane.bridge import ANEBridgeLibrary, ANEBridgeError, DEFAULT_ANE_BRIDGE_PATH, _free_bridge_blob
-from arc_ane.runtime import ANEKernel
+from crane.bridge import ANEBridgeLibrary, ANEBridgeError, DEFAULT_ANE_BRIDGE_PATH, _free_bridge_blob
+from crane.runtime import ANEKernel
 
 # ---------------------------------------------------------------------------
 # MIL header and conv constants (shared across all generators)

@@ -5,12 +5,12 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from arc_ane.bridge import ANEBridgeLibrary, DEFAULT_ANE_BRIDGE_PATH, ANEBridgeError
-from arc_ane.runtime import ANEKernel, compile_dyn_matmul_kernel, run_dyn_matmul_kernel
-from arc_ane.bridge import run_dyn_matmul
+from crane.bridge import ANEBridgeLibrary, DEFAULT_ANE_BRIDGE_PATH, ANEBridgeError
+from crane.runtime import ANEKernel, compile_dyn_matmul_kernel, run_dyn_matmul_kernel
+from crane.bridge import run_dyn_matmul
 
 
-BRIDGE_PATH = os.environ.get("ARC_ANE_BRIDGE_PATH", DEFAULT_ANE_BRIDGE_PATH)
+BRIDGE_PATH = os.environ.get("CRANE_BRIDGE_PATH", DEFAULT_ANE_BRIDGE_PATH)
 SKIP_NO_ANE = not Path(BRIDGE_PATH).exists()
 
 
@@ -30,7 +30,7 @@ def test_dyn_matmul_identity() -> None:
 
 @pytest.mark.skipif(SKIP_NO_ANE, reason="ANE bridge dylib not found")
 def test_baked_kernel_compile_and_run() -> None:
-    from arc_ane.runtime import compile_baked_linear_kernel, run_baked_linear_kernel
+    from crane.runtime import compile_baked_linear_kernel, run_baked_linear_kernel
 
     w = np.eye(16, dtype=np.float32)
     kernel = compile_baked_linear_kernel(
@@ -47,7 +47,7 @@ def test_baked_kernel_compile_and_run() -> None:
 
 @pytest.mark.skipif(SKIP_NO_ANE, reason="ANE bridge dylib not found")
 def test_fused_vision_block_small() -> None:
-    from arc_ane.fused_block import (
+    from crane.fused_block import (
         compile_fused_vision_block,
         run_fused_vision_block,
         build_full_attention_mask,

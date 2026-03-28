@@ -2,7 +2,7 @@
 
 Objective-C MIL generators from the [ANE Training project](https://github.com/Maderix/ANE) — the original reverse-engineering work that proved ANE is directly programmable via private APIs.
 
-These files are included as reference for anyone implementing new ANE kernels. The Python equivalents in `arc_ane/` were derived from these patterns.
+These files are included as reference for anyone implementing new ANE kernels. The Python equivalents in `crane/` were derived from these patterns.
 
 ## Files
 
