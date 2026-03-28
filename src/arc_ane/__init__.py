@@ -1,0 +1,18 @@
+"""ARC-ANE: A Runtime for Compiled ANE Neural Execution.
+
+Direct Python control of Apple Neural Engine via reverse-engineered private APIs.
+Supports compile-time weight baking, fused transformer block execution, and
+dynamic kernel caching — no Core ML required.
+"""
+
+__version__ = "0.1.0"
+
+from arc_ane.bridge import ANEBridgeError, ANEBridgeLibrary, DEFAULT_ANE_BRIDGE_PATH
+from arc_ane.runtime import ANEKernel, compile_baked_linear_kernel, compile_dyn_matmul_kernel
+from arc_ane.fused_block import (
+    build_fused_vision_block_mil,
+    build_full_attention_mask,
+    build_windowed_attention_mask,
+    compile_fused_vision_block,
+    run_fused_vision_block,
+)

@@ -1,0 +1,5 @@
+__pycache__/
+*.pyc
+*.dylib
+*.so
+.pytest_cache/
