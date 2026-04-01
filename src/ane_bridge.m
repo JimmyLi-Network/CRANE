@@ -67,6 +67,70 @@ static IOSurfaceRef create_surface(size_t bytes) {
     });
 }
 
+static id build_request_for_kernel(ANEKernelHandle *kernel) {
+    if (!kernel) return nil;
+
+    NSMutableArray *wIns = [NSMutableArray arrayWithCapacity:kernel->nInputs];
+    NSMutableArray *iIdx = [NSMutableArray arrayWithCapacity:kernel->nInputs];
+    for (int i = 0; i < kernel->nInputs; i++) {
+        if (!kernel->ioInputs[i]) return nil;
+        [wIns addObject:((id(*)(Class,SEL,IOSurfaceRef))objc_msgSend)(
+            g_ANEIO, @selector(objectWithIOSurface:), kernel->ioInputs[i])];
+        [iIdx addObject:@(i)];
+    }
+
+    NSMutableArray *wOuts = [NSMutableArray arrayWithCapacity:kernel->nOutputs];
+    NSMutableArray *oIdx = [NSMutableArray arrayWithCapacity:kernel->nOutputs];
+    for (int i = 0; i < kernel->nOutputs; i++) {
+        if (!kernel->ioOutputs[i]) return nil;
+        [wOuts addObject:((id(*)(Class,SEL,IOSurfaceRef))objc_msgSend)(
+            g_ANEIO, @selector(objectWithIOSurface:), kernel->ioOutputs[i])];
+        [oIdx addObject:@(i)];
+    }
+
+    return ((id(*)(Class,SEL,id,id,id,id,id,id,id))objc_msgSend)(
+        g_ANEReq,
+        @selector(requestWithInputs:inputIndices:outputs:outputIndices:weightsBuffer:perfStats:procedureIndex:),
+        wIns, iIdx, wOuts, oIdx, nil, nil, @0);
+}
+
+static bool rebind_surface_slot(
+    ANEKernelHandle *kernel,
+    bool isInput,
+    int idx,
+    uint32_t surface_id)
+{
+    if (!kernel) return false;
+    int count = isInput ? kernel->nInputs : kernel->nOutputs;
+    if (idx < 0 || idx >= count) return false;
+
+    IOSurfaceRef newSurface = IOSurfaceLookup(surface_id);
+    if (!newSurface) return false;
+
+    size_t requiredBytes = isInput ? kernel->inputBytes[idx] : kernel->outputBytes[idx];
+    if (IOSurfaceGetAllocSize(newSurface) < requiredBytes) {
+        CFRelease(newSurface);
+        return false;
+    }
+
+    IOSurfaceRef *slots = isInput ? kernel->ioInputs : kernel->ioOutputs;
+    IOSurfaceRef oldSurface = slots[idx];
+    id oldRequest __unused = kernel->request;
+
+    slots[idx] = newSurface;
+    id newRequest = build_request_for_kernel(kernel);
+    if (!newRequest) {
+        slots[idx] = oldSurface;
+        CFRelease(newSurface);
+        return false;
+    }
+
+    kernel->request = newRequest;
+    if (oldSurface) CFRelease(oldSurface);
+    oldRequest = nil;
+    return true;
+}
+
 ANEKernelHandle *ane_bridge_compile_multi_weights(
     const char *mil_text, size_t mil_len,
     const char **weight_names, const uint8_t **weight_datas,
@@ -177,24 +241,7 @@ ANEKernelHandle *ane_bridge_compile_multi_weights(
             k->ioOutputs[i] = create_surface(output_sizes[i]);
 
         // Build request
-        NSMutableArray *wIns = [NSMutableArray arrayWithCapacity:n_inputs];
-        NSMutableArray *iIdx = [NSMutableArray arrayWithCapacity:n_inputs];
-        for (int i = 0; i < n_inputs; i++) {
-            [wIns addObject:((id(*)(Class,SEL,IOSurfaceRef))objc_msgSend)(
-                g_ANEIO, @selector(objectWithIOSurface:), k->ioInputs[i])];
-            [iIdx addObject:@(i)];
-        }
-        NSMutableArray *wOuts = [NSMutableArray arrayWithCapacity:n_outputs];
-        NSMutableArray *oIdx = [NSMutableArray arrayWithCapacity:n_outputs];
-        for (int i = 0; i < n_outputs; i++) {
-            [wOuts addObject:((id(*)(Class,SEL,IOSurfaceRef))objc_msgSend)(
-                g_ANEIO, @selector(objectWithIOSurface:), k->ioOutputs[i])];
-            [oIdx addObject:@(i)];
-        }
-        k->request = ((id(*)(Class,SEL,id,id,id,id,id,id,id))objc_msgSend)(
-            g_ANEReq,
-            @selector(requestWithInputs:inputIndices:outputs:outputIndices:weightsBuffer:perfStats:procedureIndex:),
-            wIns, iIdx, wOuts, oIdx, nil, nil, @0);
+        k->request = build_request_for_kernel(k);
 
         return k;
     }
@@ -230,6 +277,22 @@ bool ane_bridge_eval(ANEKernelHandle *kernel) {
     }
 }
 
+bool ane_bridge_eval_batch(ANEKernelHandle **kernels, int count) {
+    @autoreleasepool {
+        if (!kernels || count < 0) return false;
+        for (int i = 0; i < count; i++) {
+            ANEKernelHandle *kernel = kernels[i];
+            if (!kernel || !kernel->model) return false;
+            NSError *e = nil;
+            BOOL ok = ((BOOL(*)(id,SEL,unsigned int,id,id,NSError**))objc_msgSend)(
+                kernel->model, @selector(evaluateWithQoS:options:request:error:),
+                21, @{}, kernel->request, &e);
+            if (!ok) return false;
+        }
+        return true;
+    }
+}
+
 void ane_bridge_write_input(ANEKernelHandle *kernel, int idx,
                              const void *data, size_t bytes) {
     if (!kernel || idx < 0 || idx >= kernel->nInputs) return;
@@ -244,6 +307,24 @@ void ane_bridge_read_output(ANEKernelHandle *kernel, int idx,
     IOSurfaceLock(kernel->ioOutputs[idx], kIOSurfaceLockReadOnly, NULL);
     memcpy(data, IOSurfaceGetBaseAddress(kernel->ioOutputs[idx]), bytes);
     IOSurfaceUnlock(kernel->ioOutputs[idx], kIOSurfaceLockReadOnly, NULL);
+}
+
+uint32_t ane_bridge_get_input_surface_id(ANEKernelHandle *kernel, int idx) {
+    if (!kernel || idx < 0 || idx >= kernel->nInputs || !kernel->ioInputs[idx]) return 0;
+    return IOSurfaceGetID(kernel->ioInputs[idx]);
+}
+
+uint32_t ane_bridge_get_output_surface_id(ANEKernelHandle *kernel, int idx) {
+    if (!kernel || idx < 0 || idx >= kernel->nOutputs || !kernel->ioOutputs[idx]) return 0;
+    return IOSurfaceGetID(kernel->ioOutputs[idx]);
+}
+
+bool ane_bridge_bind_input_surface_id(ANEKernelHandle *kernel, int idx, uint32_t surface_id) {
+    return rebind_surface_slot(kernel, true, idx, surface_id);
+}
+
+bool ane_bridge_bind_output_surface_id(ANEKernelHandle *kernel, int idx, uint32_t surface_id) {
+    return rebind_surface_slot(kernel, false, idx, surface_id);
 }
 
 void ane_bridge_free(ANEKernelHandle *kernel) {

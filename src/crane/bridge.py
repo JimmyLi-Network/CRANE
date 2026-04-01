@@ -7,7 +7,7 @@ import numpy as np
 
 DEFAULT_ANE_BRIDGE_PATH = os.environ.get(
     "CRANE_BRIDGE_PATH",
-    "/Users/jimmy/Projects/ANE/bridge/libane_bridge.dylib",
+    str(Path(__file__).resolve().parent.parent / "libane_bridge.dylib"),
 )
 _LIBC = ctypes.CDLL(None)
 _LIBC.free.argtypes = [ctypes.c_void_p]
@@ -63,6 +63,12 @@ class ANEBridgeLibrary:
         self.lib.ane_bridge_eval.argtypes = [ctypes.c_void_p]
         self.lib.ane_bridge_eval.restype = ctypes.c_bool
 
+        self.lib.ane_bridge_eval_batch.argtypes = [
+            ctypes.POINTER(ctypes.c_void_p),
+            ctypes.c_int,
+        ]
+        self.lib.ane_bridge_eval_batch.restype = ctypes.c_bool
+
         self.lib.ane_bridge_write_input.argtypes = [
             ctypes.c_void_p,
             ctypes.c_int,
@@ -78,6 +84,32 @@ class ANEBridgeLibrary:
             ctypes.c_size_t,
         ]
         self.lib.ane_bridge_read_output.restype = None
+
+        self.lib.ane_bridge_get_input_surface_id.argtypes = [
+            ctypes.c_void_p,
+            ctypes.c_int,
+        ]
+        self.lib.ane_bridge_get_input_surface_id.restype = ctypes.c_uint32
+
+        self.lib.ane_bridge_get_output_surface_id.argtypes = [
+            ctypes.c_void_p,
+            ctypes.c_int,
+        ]
+        self.lib.ane_bridge_get_output_surface_id.restype = ctypes.c_uint32
+
+        self.lib.ane_bridge_bind_input_surface_id.argtypes = [
+            ctypes.c_void_p,
+            ctypes.c_int,
+            ctypes.c_uint32,
+        ]
+        self.lib.ane_bridge_bind_input_surface_id.restype = ctypes.c_bool
+
+        self.lib.ane_bridge_bind_output_surface_id.argtypes = [
+            ctypes.c_void_p,
+            ctypes.c_int,
+            ctypes.c_uint32,
+        ]
+        self.lib.ane_bridge_bind_output_surface_id.restype = ctypes.c_bool
 
         self.lib.ane_bridge_free.argtypes = [ctypes.c_void_p]
         self.lib.ane_bridge_free.restype = None

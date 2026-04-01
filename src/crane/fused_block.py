@@ -19,6 +19,7 @@ per-block specializations rather than just two compiled kernels.
 from __future__ import annotations
 
 import ctypes
+from collections import OrderedDict
 from pathlib import Path
 
 import numpy as np
@@ -130,42 +131,65 @@ def build_fused_vision_block_mil(
     intermediate: int,
     mask_path: str,
     weight_paths: dict[str, str],
+    rotary_const_paths: dict[str, str] | None = None,
     eps: float = 1e-6,
+    output_dtype: np.dtype = np.float32,
 ) -> str:
     """Generate MIL text for a complete fused VisionBlock.
 
-    Single packed input (fp32) [1, dim + 2*head_dim, 1, seq]:
+    Default input (fp32) [1, dim + 2*head_dim, 1, seq]:
       channels [0:dim]                    — hidden states
       channels [dim:dim+head_dim]         — rotary cos
       channels [dim+head_dim:dim+2*head_dim] — rotary sin
 
-    Single output (fp32) [1, dim, 1, seq]:
+    With baked rotary consts:
+      input becomes hidden-only [1, dim, 1, seq]
+      cos/sin are loaded as baked ANE constants
+
+    Single output [1, dim, 1, seq]:
       block output hidden states
 
     Internal computation is fp16.
     """
-    input_channels = dim + 2 * head_dim
+    rotary_baked = rotary_const_paths is not None
+    input_channels = dim if rotary_baked else dim + 2 * head_dim
     lines: list[str] = []
     lines.append(_MIL_HEADER)
+    input_name = "hidden_in" if rotary_baked else "packed_in"
     lines.append(
         f'    func main<ios18>('
-        f'tensor<fp32, [1, {input_channels}, 1, {seq}]> packed_in'
+        f'tensor<fp32, [1, {input_channels}, 1, {seq}]> {input_name}'
         f') {{\n'
     )
 
-    # Cast packed input to fp16 and unpack via slicing
     lines.append(f'        string to16 = const()[name=string("to16"), val=string("fp16")];\n')
     lines.append(f'        string to32 = const()[name=string("to32"), val=string("fp32")];\n')
-    lines.append(f'        tensor<fp16, [1,{input_channels},1,{seq}]> packed = cast(dtype=to16,x=packed_in)[name=string("cp")];\n')
-    # Slice out hidden_states, cos, sin
-    lines.append(f'        tensor<int32, [4]> x_begin = const()[name=string("xb"), val=tensor<int32, [4]>([0,0,0,0])];\n')
-    lines.append(f'        tensor<int32, [4]> x_size = const()[name=string("xsz"), val=tensor<int32, [4]>([1,{dim},1,{seq}])];\n')
-    lines.append(f'        tensor<fp16, [1,{dim},1,{seq}]> x = slice_by_size(x=packed,begin=x_begin,size=x_size)[name=string("sx")];\n')
-    lines.append(f'        tensor<int32, [4]> cos_begin = const()[name=string("cosb"), val=tensor<int32, [4]>([0,{dim},0,0])];\n')
-    lines.append(f'        tensor<int32, [4]> cos_size = const()[name=string("cossz"), val=tensor<int32, [4]>([1,{head_dim},1,{seq}])];\n')
-    lines.append(f'        tensor<fp16, [1,{head_dim},1,{seq}]> cos = slice_by_size(x=packed,begin=cos_begin,size=cos_size)[name=string("scos")];\n')
-    lines.append(f'        tensor<int32, [4]> sin_begin = const()[name=string("sinb"), val=tensor<int32, [4]>([0,{dim + head_dim},0,0])];\n')
-    lines.append(f'        tensor<fp16, [1,{head_dim},1,{seq}]> sin = slice_by_size(x=packed,begin=sin_begin,size=cos_size)[name=string("ssin")];\n')
+    if rotary_baked:
+        lines.append(
+            f'        tensor<fp16, [1,{dim},1,{seq}]> x = cast(dtype=to16,x=hidden_in)[name=string("cx")];\n'
+        )
+        lines.append(
+            f'        tensor<fp16, [1,{head_dim},1,{seq}]> cos = const()[name=string("rot_cos"), '
+            f'val=tensor<fp16, [1,{head_dim},1,{seq}]>(BLOBFILE(path=string("{rotary_const_paths["cos"]}"), offset=uint64(64)))];\n'
+        )
+        lines.append(
+            f'        tensor<fp16, [1,{head_dim},1,{seq}]> sin = const()[name=string("rot_sin"), '
+            f'val=tensor<fp16, [1,{head_dim},1,{seq}]>(BLOBFILE(path=string("{rotary_const_paths["sin"]}"), offset=uint64(64)))];\n'
+        )
+    else:
+        # Cast packed input to fp16 and unpack via slicing
+        lines.append(
+            f'        tensor<fp16, [1,{input_channels},1,{seq}]> packed = cast(dtype=to16,x=packed_in)[name=string("cp")];\n'
+        )
+        lines.append(f'        tensor<int32, [4]> x_begin = const()[name=string("xb"), val=tensor<int32, [4]>([0,0,0,0])];\n')
+        lines.append(f'        tensor<int32, [4]> x_size = const()[name=string("xsz"), val=tensor<int32, [4]>([1,{dim},1,{seq}])];\n')
+        lines.append(f'        tensor<fp16, [1,{dim},1,{seq}]> x = slice_by_size(x=packed,begin=x_begin,size=x_size)[name=string("sx")];\n')
+        lines.append(f'        tensor<int32, [4]> cos_begin = const()[name=string("cosb"), val=tensor<int32, [4]>([0,{dim},0,0])];\n')
+        lines.append(f'        tensor<int32, [4]> cos_size = const()[name=string("cossz"), val=tensor<int32, [4]>([1,{head_dim},1,{seq}])];\n')
+        lines.append(f'        tensor<fp16, [1,{head_dim},1,{seq}]> cos = slice_by_size(x=packed,begin=cos_begin,size=cos_size)[name=string("scos")];\n')
+        lines.append(f'        tensor<int32, [4]> sin_begin = const()[name=string("sinb"), val=tensor<int32, [4]>([0,{dim + head_dim},0,0])];\n')
+        lines.append(f'        tensor<int32, [4]> sin_size = const()[name=string("sinsz"), val=tensor<int32, [4]>([1,{head_dim},1,{seq}])];\n')
+        lines.append(f'        tensor<fp16, [1,{head_dim},1,{seq}]> sin = slice_by_size(x=packed,begin=sin_begin,size=sin_size)[name=string("ssin")];\n')
 
     # Conv constants
     lines.append(_CONV_CONSTS)
@@ -208,9 +232,9 @@ def build_fused_vision_block_mil(
     # Broadcast cos/sin from [1, head_dim, 1, seq] → [1, num_heads, head_dim, seq]
     # Use tile/broadcast — but MIL might not have explicit tile
     # Alternative: reshape cos to [1, 1, head_dim, seq] then broadcast works automatically
-    lines.append(f'        tensor<int32, [4]> cos_rs = const()[name=string("crs"), val=tensor<int32, [4]>([1,1,{head_dim},{seq}])];\n')
-    lines.append(f'        tensor<fp16, [1,1,{head_dim},{seq}]> cos_4d = reshape(shape=cos_rs,x=cos)[name=string("cr4")];\n')
-    lines.append(f'        tensor<fp16, [1,1,{head_dim},{seq}]> sin_4d = reshape(shape=cos_rs,x=sin)[name=string("sr4")];\n')
+    lines.append(f'        tensor<int32, [4]> rope_rs = const()[name=string("rrs"), val=tensor<int32, [4]>([1,1,{head_dim},{seq}])];\n')
+    lines.append(f'        tensor<fp16, [1,1,{head_dim},{seq}]> cos_4d = reshape(shape=rope_rs,x=cos)[name=string("cr4")];\n')
+    lines.append(f'        tensor<fp16, [1,1,{head_dim},{seq}]> sin_4d = reshape(shape=rope_rs,x=sin)[name=string("sr4")];\n')
 
     # rotate_half: split head_dim in half, negate+swap
     half_hd = head_dim // 2
@@ -308,12 +332,14 @@ def build_fused_vision_block_mil(
     lines.append(_emit_conv('swiglu', 'down_out', weight_paths['down_weight'], intermediate, dim, seq, 'down'))
     lines.append(_emit_bias_add('down_out', 'down_b', weight_paths['down_bias'], dim, seq, 'down'))
 
-    # Residual 2: y = h + down_b
-    lines.append(f'        tensor<fp16, [1,{dim},1,{seq}]> y16 = add(x=h,y=down_b)[name=string("res2")];\n')
-
-    # Cast output to fp32
-    lines.append(f'        tensor<fp32, [1,{dim},1,{seq}]> y = cast(dtype=to32,x=y16)[name=string("out")];\n')
-
+    output_dtype = np.dtype(output_dtype)
+    if output_dtype == np.float16:
+        lines.append(f'        tensor<fp16, [1,{dim},1,{seq}]> y = add(x=h,y=down_b)[name=string("out")];\n')
+    elif output_dtype == np.float32:
+        lines.append(f'        tensor<fp16, [1,{dim},1,{seq}]> y16 = add(x=h,y=down_b)[name=string("res2")];\n')
+        lines.append(f'        tensor<fp32, [1,{dim},1,{seq}]> y = cast(dtype=to32,x=y16)[name=string("out")];\n')
+    else:
+        raise ValueError(f"unsupported fused block output dtype: {output_dtype}")
     lines.append('    } -> (y);\n')
     lines.append('}\n')
 
@@ -408,7 +434,8 @@ def _build_mask_blob(bridge: ANEBridgeLibrary, mask: np.ndarray) -> bytes:
 # ---------------------------------------------------------------------------
 
 
-_FUSED_BLOCK_CACHE: dict[str, ANEKernel] = {}
+_MAX_FUSED_BLOCK_CACHE_SIZE = 8
+_FUSED_BLOCK_CACHE: "OrderedDict[str, ANEKernel]" = OrderedDict()
 
 
 def _fused_block_cache_key(
@@ -422,6 +449,8 @@ def _fused_block_cache_key(
     intermediate: int,
     attention_mask: np.ndarray,
     eps: float,
+    output_dtype: np.dtype,
+    rotary_baked: bool = False,
 ) -> str:
     """Build a cache key for the current fixed-resolution fused-block regime.
 
@@ -432,7 +461,7 @@ def _fused_block_cache_key(
     mask_zeros = int((attention_mask == 0).sum())
     return (
         f"{bridge_path}:{logical_name}:s{seq}:d{dim}:h{num_heads}:hd{head_dim}:"
-        f"i{intermediate}:mz{mask_zeros}:eps{eps:.12g}"
+        f"i{intermediate}:mz{mask_zeros}:eps{eps:.12g}:od{np.dtype(output_dtype).name}:rb{int(rotary_baked)}"
     )
 
 
@@ -446,7 +475,10 @@ def compile_fused_vision_block(
     head_dim: int,
     intermediate: int,
     logical_name: str,
+    rotary_cos: np.ndarray | None = None,
+    rotary_sin: np.ndarray | None = None,
     eps: float = 1e-6,
+    output_dtype: np.dtype = np.float32,
     bridge_path: str = DEFAULT_ANE_BRIDGE_PATH,
 ) -> ANEKernel:
     """Compile a fused VisionBlock kernel with all weights baked in.
@@ -463,6 +495,10 @@ def compile_fused_vision_block(
     head_dim, intermediate, the current mask class, and eps to prevent stale
     hits under the fixed 384x384 regime.
     """
+    if (rotary_cos is None) != (rotary_sin is None):
+        raise ValueError("rotary_cos and rotary_sin must be provided together")
+    rotary_baked = rotary_cos is not None
+
     cache_key = _fused_block_cache_key(
         bridge_path=bridge_path,
         logical_name=logical_name,
@@ -473,8 +509,11 @@ def compile_fused_vision_block(
         intermediate=intermediate,
         attention_mask=attention_mask,
         eps=eps,
+        output_dtype=output_dtype,
+        rotary_baked=rotary_baked,
     )
     if cache_key in _FUSED_BLOCK_CACHE:
+        _FUSED_BLOCK_CACHE.move_to_end(cache_key)
         return _FUSED_BLOCK_CACHE[cache_key]
 
     bridge = ANEBridgeLibrary(bridge_path)
@@ -515,6 +554,22 @@ def compile_fused_vision_block(
     # Attention mask
     mask_path = "@model_path/weights/attn_mask.bin"
     weight_blobs[mask_path] = _build_mask_blob(bridge, attention_mask)
+    rotary_const_paths = None
+    if rotary_baked:
+        rotary_cos_path = "@model_path/weights/rotary_cos.bin"
+        rotary_sin_path = "@model_path/weights/rotary_sin.bin"
+        weight_blobs[rotary_cos_path] = _build_weight_blob_fp16(
+            bridge,
+            np.asarray(rotary_cos, dtype=np.float32).T.reshape(1, head_dim, 1, seq),
+        )
+        weight_blobs[rotary_sin_path] = _build_weight_blob_fp16(
+            bridge,
+            np.asarray(rotary_sin, dtype=np.float32).T.reshape(1, head_dim, 1, seq),
+        )
+        rotary_const_paths = {
+            "cos": rotary_cos_path,
+            "sin": rotary_sin_path,
+        }
 
     mil = build_fused_vision_block_mil(
         seq=seq,
@@ -524,21 +579,26 @@ def compile_fused_vision_block(
         intermediate=intermediate,
         mask_path=mask_path,
         weight_paths=weight_paths,
+        rotary_const_paths=rotary_const_paths,
         eps=eps,
+        output_dtype=output_dtype,
     )
 
-    input_channels = dim + 2 * head_dim
+    input_channels = dim if rotary_baked else dim + 2 * head_dim
     kernel = ANEKernel.compile_multi_weights(
         mil_text=mil,
         weight_blobs=weight_blobs,
         input_shapes=((1, input_channels, 1, seq),),
         output_shapes=((1, dim, 1, seq),),
         input_dtypes=(np.float32,),
-        output_dtypes=(np.float32,),
+        output_dtypes=(np.dtype(output_dtype),),
         bridge_path=bridge_path,
     )
 
     _FUSED_BLOCK_CACHE[cache_key] = kernel
+    while len(_FUSED_BLOCK_CACHE) > _MAX_FUSED_BLOCK_CACHE_SIZE:
+        _, evicted = _FUSED_BLOCK_CACHE.popitem(last=False)
+        evicted.close()
     return kernel
 
 
@@ -550,29 +610,123 @@ def compile_fused_vision_block(
 def run_fused_vision_block(
     kernel: ANEKernel,
     hidden_states: np.ndarray,
-    cos: np.ndarray,
-    sin: np.ndarray,
+    cos: np.ndarray | None = None,
+    sin: np.ndarray | None = None,
+    *,
     seq: int,
     dim: int,
     head_dim: int,
+    output_dtype: np.dtype = np.float32,
 ) -> np.ndarray:
     """Run a compiled fused VisionBlock kernel.
 
     hidden_states: (seq, dim) row-major
-    cos: (seq, head_dim) row-major
-    sin: (seq, head_dim) row-major
+    cos/sin: optional (seq, head_dim) row-major. Omit both when rotary was
+      baked into the compiled kernel.
 
     Returns: (seq, dim) row-major
     """
-    # Pack to ANE layout: concat [hidden_states, cos, sin] along channel dim
-    # Each is transposed from (seq, C) → (C, seq) → [1, C, 1, seq]
+    if (cos is None) != (sin is None):
+        raise ValueError("cos and sin must be provided together")
+
     h = np.asarray(hidden_states, dtype=np.float32).T  # (dim, seq)
-    c = np.asarray(cos, dtype=np.float32).T             # (head_dim, seq)
-    s = np.asarray(sin, dtype=np.float32).T             # (head_dim, seq)
-    packed = np.ascontiguousarray(
-        np.concatenate([h, c, s], axis=0).reshape(1, dim + 2 * head_dim, 1, seq)
-    )
+    if cos is None:
+        packed = np.ascontiguousarray(h.reshape(1, dim, 1, seq))
+    else:
+        # Pack to ANE layout: concat [hidden_states, cos, sin] along channel dim
+        # Each is transposed from (seq, C) → (C, seq) → [1, C, 1, seq]
+        c = np.asarray(cos, dtype=np.float32).T  # (head_dim, seq)
+        s = np.asarray(sin, dtype=np.float32).T  # (head_dim, seq)
+        packed = np.ascontiguousarray(
+            np.concatenate([h, c, s], axis=0).reshape(1, dim + 2 * head_dim, 1, seq)
+        )
 
     outputs = kernel.run([packed])
     # Unpack: [1, dim, 1, seq] → (seq, dim)
-    return np.asarray(outputs[0][0, :, 0, :], dtype=np.float32).T
+    return np.asarray(outputs[0][0, :, 0, :], dtype=np.dtype(output_dtype)).T
+
+
+def run_chained_fused_vision_blocks(
+    kernels: list[ANEKernel],
+    hidden_states: np.ndarray,
+    *,
+    seq: int,
+    dim: int,
+    output_dtype: np.dtype = np.float32,
+) -> np.ndarray:
+    """Run a hidden-only fused-block chain with shared intermediate IOSurfaces.
+
+    All kernels must have a single hidden-only input and output with shape
+    [1, dim, 1, seq]. Rotary must already be baked into each compiled kernel.
+    """
+    if len(kernels) < 2:
+        raise ValueError("expected at least two kernels for chaining")
+
+    expected_shape = (1, dim, 1, seq)
+    for kernel in kernels:
+        if tuple(kernel.input_shapes) != (expected_shape,):
+            raise ValueError(f"expected hidden-only input shape {(expected_shape,)}, got {kernel.input_shapes}")
+        if tuple(kernel.output_shapes) != (expected_shape,):
+            raise ValueError(f"expected hidden-only output shape {(expected_shape,)}, got {kernel.output_shapes}")
+
+    for prev, nxt in zip(kernels, kernels[1:]):
+        nxt.bind_input_surface_id(0, prev.get_output_surface_id(0))
+
+    packed_input = np.ascontiguousarray(np.asarray(hidden_states, dtype=np.float32).T.reshape(1, dim, 1, seq))
+    kernels[0].write_input_tensor(0, packed_input)
+    for kernel in kernels:
+        kernel.evaluate()
+
+    packed_output = np.empty(expected_shape, dtype=np.dtype(output_dtype))
+    kernels[-1].read_output_tensor(0, packed_output)
+    return np.asarray(packed_output[0, :, 0, :], dtype=np.dtype(output_dtype)).T
+
+
+def run_ping_pong_chained_fused_vision_blocks(
+    kernels: list[ANEKernel],
+    hidden_states: np.ndarray,
+    *,
+    seq: int,
+    dim: int,
+    output_dtype: np.dtype = np.float32,
+    use_batch_eval: bool = False,
+) -> np.ndarray:
+    """Run a hidden-only fused-block chain using two reused IOSurfaces.
+
+    The first kernel's input/output surfaces act as the A/B ping-pong buffers.
+    All later kernels are rebound onto those surfaces before evaluation.
+    """
+    if len(kernels) < 2:
+        raise ValueError("expected at least two kernels for ping-pong chaining")
+
+    expected_shape = (1, dim, 1, seq)
+    for kernel in kernels:
+        if tuple(kernel.input_shapes) != (expected_shape,):
+            raise ValueError(f"expected hidden-only input shape {(expected_shape,)}, got {kernel.input_shapes}")
+        if tuple(kernel.output_shapes) != (expected_shape,):
+            raise ValueError(f"expected hidden-only output shape {(expected_shape,)}, got {kernel.output_shapes}")
+
+    surface_a = kernels[0].get_input_surface_id(0)
+    surface_b = kernels[0].get_output_surface_id(0)
+    if surface_a < 0 or surface_b < 0:
+        raise ANEBridgeError("failed to acquire ping-pong surface ids")
+
+    for index, kernel in enumerate(kernels[1:], start=1):
+        if index % 2 == 1:
+            kernel.bind_input_surface_id(0, surface_b)
+            kernel.bind_output_surface_id(0, surface_a)
+        else:
+            kernel.bind_input_surface_id(0, surface_a)
+            kernel.bind_output_surface_id(0, surface_b)
+
+    packed_input = np.ascontiguousarray(np.asarray(hidden_states, dtype=np.float32).T.reshape(1, dim, 1, seq))
+    kernels[0].write_input_tensor(0, packed_input)
+    if use_batch_eval:
+        ANEKernel.evaluate_batch(kernels)
+    else:
+        for kernel in kernels:
+            kernel.evaluate()
+
+    packed_output = np.empty(expected_shape, dtype=np.dtype(output_dtype))
+    kernels[-1].read_output_tensor(0, packed_output)
+    return np.asarray(packed_output[0, :, 0, :], dtype=np.dtype(output_dtype)).T

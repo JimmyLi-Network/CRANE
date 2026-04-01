@@ -50,6 +50,11 @@ ANEKernelHandle *ane_bridge_compile_multi_weights(
 // Returns true on success
 bool ane_bridge_eval(ANEKernelHandle *kernel);
 
+// Evaluate a sequence of compiled kernels on ANE in-order.
+// This is a minimal batch wrapper around repeated evaluateWithQoS calls,
+// not a true multi-graph submission primitive.
+bool ane_bridge_eval_batch(ANEKernelHandle **kernels, int count);
+
 // Write data to kernel input tensor
 void ane_bridge_write_input(ANEKernelHandle *kernel, int idx,
                              const void *data, size_t bytes);
@@ -57,6 +62,16 @@ void ane_bridge_write_input(ANEKernelHandle *kernel, int idx,
 // Read data from kernel output tensor
 void ane_bridge_read_output(ANEKernelHandle *kernel, int idx,
                               void *data, size_t bytes);
+
+// Export current bound IOSurface IDs for chaining/shared-surface reuse.
+// Returns 0 on invalid kernel/index.
+uint32_t ane_bridge_get_input_surface_id(ANEKernelHandle *kernel, int idx);
+uint32_t ane_bridge_get_output_surface_id(ANEKernelHandle *kernel, int idx);
+
+// Rebind a kernel input/output to an existing IOSurface looked up by ID.
+// Rebuilds the underlying _ANERequest. Returns true on success.
+bool ane_bridge_bind_input_surface_id(ANEKernelHandle *kernel, int idx, uint32_t surface_id);
+bool ane_bridge_bind_output_surface_id(ANEKernelHandle *kernel, int idx, uint32_t surface_id);
 
 // Free a compiled kernel and all associated resources
 void ane_bridge_free(ANEKernelHandle *kernel);

@@ -1,4 +1,5 @@
 import ctypes
+from collections import OrderedDict
 from dataclasses import dataclass
 from typing import Sequence
 
@@ -17,7 +18,8 @@ from crane.bridge import (
     pack_dyn_matmul_input,
 )
 
-_DYN_MATMUL_KERNEL_CACHE: dict[tuple[str, int, int, int], "ANEKernel"] = {}
+_MAX_DYN_MATMUL_KERNEL_CACHE_SIZE = 12
+_DYN_MATMUL_KERNEL_CACHE: "OrderedDict[tuple[str, int, int, int], ANEKernel]" = OrderedDict()
 _STATIC_LINEAR_KERNEL_CACHE: dict[tuple[str, str], "ANEKernel"] = {}
 
 
@@ -51,6 +53,26 @@ class ANEKernel:
         self.output_shapes = tuple(tuple(int(v) for v in shape) for shape in output_shapes)
         self.input_dtypes = tuple(np.dtype(dtype) for dtype in input_dtypes)
         self.output_dtypes = tuple(np.dtype(dtype) for dtype in output_dtypes)
+
+    def _prepare_input_tensor(self, idx: int, array: np.ndarray) -> np.ndarray:
+        if idx < 0 or idx >= len(self.input_shapes):
+            raise IndexError("input index out of range")
+        shape = self.input_shapes[idx]
+        dtype = self.input_dtypes[idx]
+        prepared = np.ascontiguousarray(np.asarray(array, dtype=dtype))
+        if prepared.shape != shape:
+            raise ValueError(f"expected input shape {shape}, got {prepared.shape}")
+        return prepared
+
+    def _prepare_output_tensor(self, idx: int, array: np.ndarray) -> np.ndarray:
+        if idx < 0 or idx >= len(self.output_shapes):
+            raise IndexError("output index out of range")
+        shape = self.output_shapes[idx]
+        dtype = self.output_dtypes[idx]
+        prepared = np.ascontiguousarray(np.asarray(array, dtype=dtype))
+        if prepared.shape != shape:
+            raise ValueError(f"expected output shape {shape}, got {prepared.shape}")
+        return prepared
 
     @classmethod
     def compile(
@@ -158,11 +180,8 @@ class ANEKernel:
             raise ValueError("number of input tensors does not match compiled kernel")
 
         prepared_inputs: list[np.ndarray] = []
-        for array, shape, dtype in zip(inputs, self.input_shapes, self.input_dtypes):
-            prepared = np.ascontiguousarray(np.asarray(array, dtype=dtype))
-            if prepared.shape != shape:
-                raise ValueError(f"expected input shape {shape}, got {prepared.shape}")
-            prepared_inputs.append(prepared)
+        for idx, array in enumerate(inputs):
+            prepared_inputs.append(self._prepare_input_tensor(idx, array))
 
         if output_buffers is None:
             prepared_outputs = [
@@ -172,31 +191,76 @@ class ANEKernel:
             if len(output_buffers) != len(self.output_shapes):
                 raise ValueError("number of output buffers does not match compiled kernel")
             prepared_outputs = []
-            for array, shape, dtype in zip(output_buffers, self.output_shapes, self.output_dtypes):
-                prepared = np.ascontiguousarray(np.asarray(array, dtype=dtype))
-                if prepared.shape != shape:
-                    raise ValueError(f"expected output shape {shape}, got {prepared.shape}")
-                prepared_outputs.append(prepared)
+            for idx, array in enumerate(output_buffers):
+                prepared_outputs.append(self._prepare_output_tensor(idx, array))
 
         for idx, array in enumerate(prepared_inputs):
-            self.bridge.lib.ane_bridge_write_input(
-                self.kernel_handle,
-                idx,
-                array.ctypes.data_as(ctypes.c_void_p),
-                array.nbytes,
-            )
+            self.write_input_tensor(idx, array)
 
+        self.evaluate()
+
+        for idx, array in enumerate(prepared_outputs):
+            self.read_output_tensor(idx, array)
+        return prepared_outputs
+
+    def write_input_tensor(self, idx: int, array: np.ndarray) -> None:
+        prepared = self._prepare_input_tensor(idx, array)
+        self.bridge.lib.ane_bridge_write_input(
+            self.kernel_handle,
+            idx,
+            prepared.ctypes.data_as(ctypes.c_void_p),
+            prepared.nbytes,
+        )
+
+    def read_output_tensor(self, idx: int, array: np.ndarray) -> np.ndarray:
+        prepared = self._prepare_output_tensor(idx, array)
+        self.bridge.lib.ane_bridge_read_output(
+            self.kernel_handle,
+            idx,
+            prepared.ctypes.data_as(ctypes.c_void_p),
+            prepared.nbytes,
+        )
+        return prepared
+
+    def evaluate(self) -> None:
         if not self.bridge.lib.ane_bridge_eval(self.kernel_handle):
             raise ANEBridgeError("ane_bridge_eval failed")
 
-        for idx, array in enumerate(prepared_outputs):
-            self.bridge.lib.ane_bridge_read_output(
-                self.kernel_handle,
-                idx,
-                array.ctypes.data_as(ctypes.c_void_p),
-                array.nbytes,
-            )
-        return prepared_outputs
+    @classmethod
+    def evaluate_batch(cls, kernels: Sequence["ANEKernel"]) -> None:
+        del cls
+        if not kernels:
+            return
+        bridge = kernels[0].bridge
+        kernel_handles = (ctypes.c_void_p * len(kernels))(
+            *[ctypes.c_void_p(kernel.kernel_handle) for kernel in kernels]
+        )
+        if not bridge.lib.ane_bridge_eval_batch(kernel_handles, len(kernels)):
+            raise ANEBridgeError("ane_bridge_eval_batch failed")
+
+    def get_input_surface_id(self, idx: int) -> int:
+        return int(self.bridge.lib.ane_bridge_get_input_surface_id(self.kernel_handle, idx))
+
+    def get_output_surface_id(self, idx: int) -> int:
+        return int(self.bridge.lib.ane_bridge_get_output_surface_id(self.kernel_handle, idx))
+
+    def bind_input_surface_id(self, idx: int, surface_id: int) -> None:
+        ok = self.bridge.lib.ane_bridge_bind_input_surface_id(
+            self.kernel_handle,
+            idx,
+            int(surface_id),
+        )
+        if not ok:
+            raise ANEBridgeError("ane_bridge_bind_input_surface_id failed")
+
+    def bind_output_surface_id(self, idx: int, surface_id: int) -> None:
+        ok = self.bridge.lib.ane_bridge_bind_output_surface_id(
+            self.kernel_handle,
+            idx,
+            int(surface_id),
+        )
+        if not ok:
+            raise ANEBridgeError("ane_bridge_bind_output_surface_id failed")
 
     def close(self) -> None:
         if self.kernel_handle is not None:
@@ -229,6 +293,11 @@ def compile_dyn_matmul_kernel(
             bridge_path=bridge_path,
         )
         _DYN_MATMUL_KERNEL_CACHE[key] = kernel
+        while len(_DYN_MATMUL_KERNEL_CACHE) > _MAX_DYN_MATMUL_KERNEL_CACHE_SIZE:
+            _, evicted = _DYN_MATMUL_KERNEL_CACHE.popitem(last=False)
+            evicted.close()
+    else:
+        _DYN_MATMUL_KERNEL_CACHE.move_to_end(key)
     return kernel
 
 

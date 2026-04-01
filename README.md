@@ -12,7 +12,9 @@ Direct Python control of Apple Neural Engine (ANE) via reverse-engineered privat
 - A Python runtime for executing custom compute graphs directly on Apple's Neural Engine
 - Fused transformer block kernels: RMSNorm + multi-head attention (with RoPE and windowed masking) + SwiGLU MLP + residual connections — compiled into a single ANE evaluation
 - Compile-time weight baking via `_ANEInMemoryModel` private APIs
-- Dynamic kernel cache keyed by shape, mask structure, and block identity
+- IOSurface ping-pong chaining: 32 blocks share 2 surfaces, eliminating all intermediate CPU-ANE transfers
+- Baked rotary embeddings: cos/sin as MIL constants, enabling hidden-states-only I/O for chaining
+- Dynamic kernel cache with bounded LRU eviction and explicit lifecycle management
 - C bridge (`libane_bridge.dylib`) wrapping `_ANECompiler` / `_ANEInMemoryModelDescriptor` / `_ANERequest` into a ctypes-friendly interface
 
 ## What This Is Not
@@ -23,7 +25,7 @@ Direct Python control of Apple Neural Engine (ANE) via reverse-engineered privat
 
 ## Results
 
-Measured on Qwen2.5-VL-3B-Instruct vision encoder (32 transformer blocks, dim=1280, 16 heads, head_dim=80), 384x384 input image, Apple Silicon:
+Measured on Qwen2.5-VL-3B-Instruct vision encoder (32 transformer blocks, dim=1280, 16 heads, head_dim=80, intermediate=3420), 384x384 input image, Apple Silicon:
 
 ### Optimization Progression
 
@@ -33,14 +35,27 @@ Measured on Qwen2.5-VL-3B-Instruct vision encoder (32 transformer blocks, dim=12
 | + Compile-time weight baking (partial) | 4,498 | 1.3x |
 | + Remove sequence chunking, full bake | 1,315 | 4.4x |
 | + **Fused block kernel** | **260** | **22.4x** |
+| + Baked rotary + IOSurface ping-pong chain | **245** | **23.7x** |
 
 ### Fused Block: Per-Block Latency
 
 | Approach | Per-Block (ms) | ANE Evals/Block |
 |----------|---------------:|----------------:|
 | Unfused (5 separate ANE calls + CPU ops) | 36.4 | 5 |
-| Fused (1 single ANE call) | **7.9** | **1** |
-| **Speedup** | **4.6x** | |
+| Fused (1 single ANE call) | 7.9 | 1 |
+| Fused + baked rotary + chain | **7.7** | **1** |
+| **Speedup** | **4.7x** | |
+
+### IOSurface Ping-Pong Chain
+
+With baked rotary embeddings, input and output have the same shape `[1, dim, 1, seq]`. This enables IOSurface chaining across blocks:
+
+- Block 0: input=surfaceA, output=surfaceB
+- Block 1: input=surfaceB, output=surfaceA
+- Block 2: input=surfaceA, output=surfaceB
+- ...
+
+Only 1 CPU write (entry) + 1 CPU read (exit) for the entire 32-block chain. Intermediate blocks execute with zero CPU-ANE data transfer.
 
 ### Parity vs Reference (MLX bfloat16)
 
@@ -48,6 +63,8 @@ Measured on Qwen2.5-VL-3B-Instruct vision encoder (32 transformer blocks, dim=12
 |------------|-------------:|--------------:|
 | Windowed attention (block 0) | 0.066 | 0.003 |
 | Full attention (block 7) | 0.023 | 0.003 |
+| Baked rotary vs dynamic rotary | 0.008 | 0.000002 |
+| 2-block chained vs sequential | 0.0 | 0.0 (bit-exact) |
 
 ## Architecture
 
@@ -135,6 +152,36 @@ kernel = compile_fused_vision_block(
 # Per-image: only hidden_states + cos + sin transferred
 out = run_fused_vision_block(kernel, hidden_states, cos, sin,
                               seq=784, dim=1280, head_dim=80)
+```
+
+### Fused Block with Baked Rotary + Ping-Pong Chain
+
+```python
+from crane import (
+    compile_fused_vision_block,
+    run_ping_pong_chained_fused_vision_blocks,
+    build_windowed_attention_mask,
+)
+
+# Compile 32 blocks with baked rotary cos/sin
+kernels = []
+for i in range(32):
+    kernel = compile_fused_vision_block(
+        block_weights=all_weights[i],
+        attention_mask=masks[i],
+        seq=784, dim=1280, num_heads=16, head_dim=80, intermediate=3420,
+        logical_name=f"block.{i}",
+        rotary_cos=cos,   # baked as MIL constants
+        rotary_sin=sin,   # enables hidden-only I/O
+    )
+    kernels.append(kernel)
+
+# Execute entire 32-block chain with IOSurface ping-pong
+# Only 1 write + 1 read for all 32 blocks
+out = run_ping_pong_chained_fused_vision_blocks(
+    kernels, hidden_states,
+    seq=784, dim=1280,
+)
 ```
 
 ## Testing
