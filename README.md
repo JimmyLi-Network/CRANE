@@ -5,6 +5,12 @@
 <h1 align="center">CRANE</h1>
 <p align="center"><b>Compiled Runtime for Apple Neural Engine</b></p>
 
+<p align="center">
+  <img src="https://upload.wikimedia.org/wikipedia/en/thumb/e/e5/University_of_Wisconsin_seal.svg/150px-University_of_Wisconsin_seal.svg.png" height="40" alt="UW-Madison"/>
+  &nbsp;&nbsp;
+  Developed by <b>Yilong Li</b> at the <b>University of Wisconsin-Madison</b>
+</p>
+
 Direct Python control of Apple Neural Engine (ANE) via reverse-engineered private APIs. Compile MIL programs with baked weights, execute fused transformer blocks on ANE hardware, and cache kernels for repeated inference — no Core ML required.
 
 ## What This Is
@@ -229,6 +235,13 @@ The `reference/` directory contains the original Objective-C MIL generators from
 - **Static shapes**: MIL programs are compiled for fixed tensor shapes; different resolutions need recompilation
 - **Single input tensor**: ANE kernels accept one input; multiple tensors are packed via channel concatenation
 - **macOS 15+ required**: Tested on M-series chips only
+
+## Author
+
+**Yilong (Jimmy) Li**
+University of Wisconsin-Madison
+
+This project is part of ongoing research on cross-accelerator inference for vision-language models on edge SoCs.
 
 ## Disclaimer
 
