@@ -9,7 +9,7 @@
   <img src="assets/uw-madison-crest.png" width="360" alt="University of Wisconsin-Madison"/>
 </p>
 <p align="center">
-  Developed by <b>Yilong Li</b>
+  Developed by <b>Yilong Li</b> during his research at University of Wisconsin-Madison
 </p>
 
 Direct Python control of Apple Neural Engine (ANE) via reverse-engineered private APIs. Compile MIL programs with baked weights, execute fused transformer blocks on ANE hardware, and cache kernels for repeated inference — no Core ML required.
