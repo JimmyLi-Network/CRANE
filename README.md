@@ -6,9 +6,10 @@
 <p align="center"><b>Compiled Runtime for Apple Neural Engine</b></p>
 
 <p align="center">
-  <img src="https://upload.wikimedia.org/wikipedia/en/thumb/e/e5/University_of_Wisconsin_seal.svg/150px-University_of_Wisconsin_seal.svg.png" height="40" alt="UW-Madison"/>
-  &nbsp;&nbsp;
-  Developed by <b>Yilong Li</b> at the <b>University of Wisconsin-Madison</b>
+  <img src="assets/uw-madison-badge.svg" height="50" alt="University of Wisconsin-Madison"/>
+</p>
+<p align="center">
+  Developed by <b>Yilong Li</b>
 </p>
 
 Direct Python control of Apple Neural Engine (ANE) via reverse-engineered private APIs. Compile MIL programs with baked weights, execute fused transformer blocks on ANE hardware, and cache kernels for repeated inference — no Core ML required.
